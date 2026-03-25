@@ -1,6 +1,8 @@
-"""
-RockFrag App — Análisis de Fragmentación con SAM
-"""
+t.markdown("""
+# ⛏️ RockFrag AI
+### Ingeniería Mina - SPCC Cuajone
+*Análisis de Fragmentación de Roca*
+""")
 
 import streamlit as st
 import cv2
