@@ -1,5 +1,6 @@
 """
 RockFrag App — Análisis de Fragmentación con SAM
+Ingeniería Mina - SPCC Cuajone
 """
 
 import streamlit as st
@@ -18,7 +19,6 @@ st.set_page_config(
     layout="wide",
 )
 
-# CSS personalizado (industrial/minero)
 st.markdown("""
 <style>
     .main { background-color: #0f0f1a; }
@@ -82,7 +82,7 @@ if uploaded is not None:
     file_bytes = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
     img_to_analyze = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
     img_rgb = cv2.cvtColor(img_to_analyze, cv2.COLOR_BGR2RGB)
-    st.image(img_rgb, caption="Imagen cargada", use_column_width=True)
+    st.image(img_rgb, caption="Imagen cargada", width=700)
     st.markdown("---")
     
     if st.button("🔍 ANALIZAR FRAGMENTACIÓN", use_container_width=True):
@@ -130,11 +130,11 @@ if uploaded is not None:
                     st.subheader("🎨 Segmentación SAM")
                     seg_img = RockFragVisualizer.draw_segmentation(img_to_analyze, result)
                     seg_rgb = cv2.cvtColor(seg_img, cv2.COLOR_BGR2RGB)
-                    st.image(seg_rgb, use_column_width=True)
+                    st.image(seg_rgb, width=500)
                 with col_curve:
                     st.subheader("📈 Curva granulométrica")
                     curve_bytes = RockFragVisualizer.plot_grading_curve(result)
-                    st.image(curve_bytes, use_column_width=True)
+                    st.image(curve_bytes, width=500)
                 
                 # Descargas
                 st.subheader("💾 Descargar resultados")
