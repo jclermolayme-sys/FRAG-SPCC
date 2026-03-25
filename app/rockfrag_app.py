@@ -1,4 +1,4 @@
-t.markdown("""
+st.markdown("""
 # ⛏️ RockFrag AI
 ### Ingeniería Mina - SPCC Cuajone
 *Análisis de Fragmentación de Roca*
