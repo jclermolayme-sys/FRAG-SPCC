@@ -5,3 +5,5 @@ streamlit>=1.28.0
 Pillow>=10.0.0
 pandas>=2.0.0
 scikit-image>=0.21.0
+ultralytics>=8.2.0
+torch>=2.0.0
