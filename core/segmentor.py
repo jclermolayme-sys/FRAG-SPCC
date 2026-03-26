@@ -1,7 +1,12 @@
 """
 RockFrag Core - Motor de segmentación con SAM
+Corregido para Streamlit Cloud:
+  - Modelo SAM descargado en /tmp (evita errores de permisos)
+  - Sin forzar CUDA (Streamlit Cloud no tiene GPU)
+  - Cache del modelo con variable de módulo
 """
 
+import os
 import cv2
 import numpy as np
 import matplotlib
@@ -13,6 +18,12 @@ from typing import Optional
 from ultralytics import SAM
 import torch
 
+# Forzar directorio de descarga de Ultralytics a /tmp
+os.environ["YOLO_CONFIG_DIR"] = "/tmp/.ultralytics"
+
+_SAM_INSTANCE = None   # Cache global para no recargar en cada análisis
+
+
 @dataclass
 class Fragment:
     id: int
@@ -23,6 +34,7 @@ class Fragment:
     contour: np.ndarray
     bbox: tuple
     circularity: float
+
 
 @dataclass
 class AnalysisResult:
@@ -37,6 +49,7 @@ class AnalysisResult:
     max_diameter: float = 0.0
     min_diameter: float = 0.0
 
+
 class RockFragAnalyzer:
     def __init__(
         self,
@@ -49,13 +62,17 @@ class RockFragAnalyzer:
         self.min_fragment_area_px = min_fragment_area_px
         self.max_fragment_ratio = max_fragment_ratio
         self.sam_model_path = sam_model_path
-        self.sam = None
 
     def _load_sam(self):
-        if self.sam is None:
-            self.sam = SAM(self.sam_model_path)
-            if torch.cuda.is_available():
-                self.sam.to('cuda')
+        """Carga SAM una sola vez usando cache global de módulo."""
+        global _SAM_INSTANCE
+        if _SAM_INSTANCE is None:
+            # Ultralytics descarga el modelo automáticamente a /tmp si no existe
+            _SAM_INSTANCE = SAM(self.sam_model_path)
+            # NO forzar CUDA — Streamlit Cloud corre en CPU
+            # if torch.cuda.is_available():
+            #     _SAM_INSTANCE.to('cuda')
+        return _SAM_INSTANCE
 
     def detect_scale_bar(self, img: np.ndarray) -> Optional[float]:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -80,7 +97,6 @@ class RockFragAnalyzer:
         self,
         image_path: str,
         scale_px_per_cm: Optional[float] = None,
-        use_watershed: bool = True,
     ) -> AnalysisResult:
         img = cv2.imread(str(image_path))
         if img is None:
@@ -93,21 +109,26 @@ class RockFragAnalyzer:
             if scale_px_per_cm is None:
                 scale_px_per_cm = (w * 0.10) / self.scale_reference_cm
 
-        self._load_sam()
+        sam = self._load_sam()
 
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        results = self.sam(img_rgb)
+        results = sam(img_rgb)
+
         masks = []
         if results[0].masks is not None:
             masks_tensor = results[0].masks.data.cpu().numpy()
             for mask in masks_tensor:
-                area = np.sum(mask)
+                area = float(np.sum(mask))
                 if area >= self.min_fragment_area_px:
                     masks.append(mask.astype(bool))
 
         if not masks:
-            raise ValueError("No se detectaron fragmentos con SAM.")
+            raise ValueError(
+                "SAM no detectó fragmentos. Intenta reducir el 'Tamaño mínimo de fragmento' "
+                "o verifica que la imagen contenga material de roca visible."
+            )
 
+        max_area_px = h * w * self.max_fragment_ratio
         fragments = []
         for i, mask in enumerate(masks):
             mask_uint8 = (mask * 255).astype(np.uint8)
@@ -116,7 +137,7 @@ class RockFragAnalyzer:
                 continue
             cnt = max(contours, key=cv2.contourArea)
             area_px = cv2.contourArea(cnt)
-            if area_px < self.min_fragment_area_px:
+            if area_px < self.min_fragment_area_px or area_px > max_area_px:
                 continue
             perimeter = cv2.arcLength(cnt, True)
             circularity = (4 * np.pi * area_px / (perimeter ** 2)) if perimeter > 0 else 0
@@ -135,12 +156,15 @@ class RockFragAnalyzer:
             ))
 
         if not fragments:
-            raise ValueError("Después de filtrar, no quedaron fragmentos.")
+            raise ValueError(
+                "Después de filtrar por tamaño no quedaron fragmentos. "
+                "Ajusta los parámetros de tamaño mínimo/máximo."
+            )
 
         fragments_sorted = sorted(fragments, key=lambda f: f.diameter_cm)
         diameters = [f.diameter_cm for f in fragments_sorted]
 
-        result = AnalysisResult(
+        return AnalysisResult(
             image_path=str(image_path),
             scale_px_per_cm=scale_px_per_cm,
             fragments=fragments_sorted,
@@ -152,7 +176,7 @@ class RockFragAnalyzer:
             max_diameter=float(max(diameters)),
             min_diameter=float(min(diameters)),
         )
-        return result
+
 
 class RockFragVisualizer:
     @staticmethod
@@ -166,10 +190,11 @@ class RockFragVisualizer:
             g = int(255 * (1 - abs(2 * ratio - 1)))
             color = (b, g, r)
             cv2.drawContours(output, [frag.contour], -1, color, 2)
-            x, y, w, h = frag.bbox
-            cx, cy = x + w // 2, y + h // 2
+            x, y, cw, ch = frag.bbox
+            cx, cy = x + cw // 2, y + ch // 2
             label = f"{frag.diameter_cm:.1f}cm"
-            cv2.putText(output, label, (cx - 20, cy), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            cv2.putText(output, label, (cx - 20, cy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         return output
 
     @staticmethod
@@ -177,27 +202,36 @@ class RockFragVisualizer:
         diameters = sorted([f.diameter_cm for f in result.fragments])
         n = len(diameters)
         cumulative_pct = [(i + 1) / n * 100 for i in range(n)]
+
         fig, ax = plt.subplots(figsize=(8, 5))
         fig.patch.set_facecolor('#1a1a2e')
         ax.set_facecolor('#16213e')
         ax.plot(diameters, cumulative_pct, color='#00d4ff', linewidth=2.5, label='Curva granulométrica')
         ax.fill_between(diameters, cumulative_pct, alpha=0.15, color='#00d4ff')
-        for pct, val, color in [(20, result.p20, '#ff6b6b'), (50, result.p50, '#ffd93d'), (80, result.p80, '#6bcb77')]:
+        for pct, val, color in [
+            (20, result.p20, '#ff6b6b'),
+            (50, result.p50, '#ffd93d'),
+            (80, result.p80, '#6bcb77'),
+        ]:
             ax.axhline(pct, color=color, linestyle='--', alpha=0.7, linewidth=1.2)
             ax.axvline(val, color=color, linestyle='--', alpha=0.7, linewidth=1.2)
-            ax.annotate(f'P{pct} = {val:.1f} cm', xy=(val, pct), xytext=(val + 0.5, pct + 3), color=color, fontsize=9, fontweight='bold')
+            ax.annotate(
+                f'P{pct} = {val:.1f} cm',
+                xy=(val, pct),
+                xytext=(val + 0.5, pct + 3),
+                color=color, fontsize=9, fontweight='bold',
+            )
         ax.set_xlabel('Diámetro equivalente (cm)', color='white')
         ax.set_ylabel('Pasante acumulado (%)', color='white')
         ax.set_title('Curva Granulométrica — Análisis con SAM', color='white', fontsize=12)
         ax.tick_params(colors='white')
-        ax.spines['bottom'].set_color('#444')
-        ax.spines['left'].set_color('#444')
-        ax.spines['top'].set_color('#444')
-        ax.spines['right'].set_color('#444')
+        for spine in ax.spines.values():
+            spine.set_color('#444')
         ax.set_ylim(0, 105)
         ax.set_xlim(0, max(diameters) * 1.05)
         ax.grid(True, alpha=0.2, color='#555')
         ax.legend(facecolor='#1a1a2e', labelcolor='white')
+
         buf = io.BytesIO()
         plt.savefig(buf, format='png', dpi=120, bbox_inches='tight', facecolor='#1a1a2e')
         plt.close()
@@ -219,7 +253,12 @@ class RockFragVisualizer:
                 "min_cm": round(result.min_diameter, 2),
             },
             "fragments": [
-                {"id": f.id, "diameter_cm": f.diameter_cm, "area_cm2": f.area_cm2, "circularity": f.circularity}
+                {
+                    "id": f.id,
+                    "diameter_cm": f.diameter_cm,
+                    "area_cm2": f.area_cm2,
+                    "circularity": f.circularity,
+                }
                 for f in result.fragments
             ],
         }
